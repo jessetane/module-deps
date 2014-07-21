@@ -68,16 +68,13 @@ Deps.prototype._start = function () {
         var main = self.mains[i];
         var file = self.entries[i];
         
-        self.lookupPackage(file, function (err, pkg) {
+        self.lookupPackage(file, null, function (err, pkg) {
             if (err) return self.emit('error', err)
             else start(main, file, pkg)
         });
     })(i);
     
     function start (main, file, pkg) {
-        if (!pkg) pkg = {};
-        if (!pkg.__dirname) pkg.__dirname = path.dirname(file);
-        
         if (typeof main === 'object') {
             self.walk({ stream: main, file: main.path || file }, main);
         }
@@ -113,7 +110,7 @@ Deps.prototype.resolve = function (id, parent, cb) {
         var file = self.cache[parent.id].deps[id];
         var pkg = self.pkgCache[file];
         if (pkg) return cb(null, file, pkg);
-        return self.lookupPackage(file, function (err, pkg) {
+        return self.lookupPackage(file, parent, function (err, pkg) {
             cb(null, file, pkg);
         });
     }
@@ -137,11 +134,8 @@ Deps.prototype.resolve = function (id, parent, cb) {
         
         if (pkg && pkgdir) pkg.__dirname = pkgdir;
         if (!pkg || !pkg.__dirname) {
-            self.lookupPackage(file, function (err, p) {
+            self.lookupPackage(file, parent, function (err, p) {
                 if (err) return cb(err);
-                if (!p) p = {};
-                if (!p.__dirname) p.__dirname = path.dirname(file);
-                self.pkgCache[file] = p;
                 onresolve(err, file, opts.packageFilter
                     ? opts.packageFilter(p, p.__dirname) : p
                 );
@@ -167,8 +161,7 @@ Deps.prototype.readFile = function (file, pkg) {
 Deps.prototype.getTransforms = function (file, pkg) {
     var self = this;
     var isTopLevel = this.entries.some(function (main) {
-        var m = path.relative(path.dirname(main), file);
-        return m.split(/[\\\/]/).indexOf('node_modules') < 0;
+        return self.pkgCache[main] === pkg;
     });
     
     var transforms = [].concat(isTopLevel ? this.transforms : [])
@@ -253,7 +246,7 @@ Deps.prototype.walk = function (id, parent, cb) {
     this.pending ++;
     
     if (id && typeof id === 'object' && id.stream) {
-        self.lookupPackage(id.file, function (err, pkg) {
+        self.lookupPackage(id.file, parent, function (err, pkg) {
             id.stream
                 .pipe(self.getTransforms(id.file, pkg))
                 .pipe(concat(function (body) {
@@ -344,7 +337,7 @@ Deps.prototype.parseDeps = function (file, src, cb) {
     return deps;
 };
 
-Deps.prototype.lookupPackage = function (file, cb) {
+Deps.prototype.lookupPackage = function (file, parent, cb) {
     var self = this;
     
     var cached = this.pkgCache[file];
@@ -355,17 +348,21 @@ Deps.prototype.lookupPackage = function (file, cb) {
     
     (function next () {
         if (dirs.length === 0) {
-            self.pkgCache[file] = false;
-            return cb(null, undefined);
+            if (!parent) {
+                var p = {};
+                p.__dirname = path.dirname(file);
+            }
+            else {
+                p = parent.package;
+            }
+            self.pkgCache[file] = p;
+            return cb(null, p);
         }
+        
         var dir = dirs.shift();
-        if (dir.split(/[\\\/]/).slice(-1)[0] === 'node_modules') {
-            return cb(null, undefined);
-        }
-        
         var pkgfile = path.join(dir, 'package.json');
-        
         var cached = self.pkgCache[pkgfile];
+
         if (cached) return nextTick(cb, null, cached);
         else if (cached === false) return next();
         
